@@ -5,22 +5,36 @@ import {
   generate,
   ElementNode,
   NodeTypes,
-  ErrorCodes
+  ErrorCodes,
+  ForNode,
+  CallExpression,
+  ComponentNode
 } from '../../src'
 import { transformElement } from '../../src/transforms/transformElement'
 import { transformOn } from '../../src/transforms/vOn'
 import { transformBind } from '../../src/transforms/vBind'
 import { transformExpression } from '../../src/transforms/transformExpression'
-import { trackSlotScopes } from '../../src/transforms/vSlot'
+import {
+  trackSlotScopes,
+  trackVForSlotScopes
+} from '../../src/transforms/vSlot'
+import { CREATE_SLOTS, RENDER_LIST } from '../../src/runtimeHelpers'
+import { createObjectMatcher, genFlagText } from '../testUtils'
+import { PatchFlags } from '@vue/shared'
+import { transformFor } from '../../src/transforms/vFor'
+import { transformIf } from '../../src/transforms/vIf'
 
 function parseWithSlots(template: string, options: CompilerOptions = {}) {
   const ast = parse(template)
   transform(ast, {
     nodeTransforms: [
+      transformIf,
+      transformFor,
       ...(options.prefixIdentifiers
-        ? [transformExpression, trackSlotScopes]
+        ? [trackVForSlotScopes, transformExpression]
         : []),
-      transformElement
+      transformElement,
+      trackSlotScopes
     ],
     directiveTransforms: {
       on: transformOn,
@@ -30,24 +44,32 @@ function parseWithSlots(template: string, options: CompilerOptions = {}) {
   })
   return {
     root: ast,
-    slots: (ast.children[0] as ElementNode).codegenNode!.arguments[2]
+    slots:
+      ast.children[0].type === NodeTypes.ELEMENT
+        ? (ast.children[0].codegenNode as CallExpression).arguments[2]
+        : null
   }
 }
 
 function createSlotMatcher(obj: Record<string, any>) {
   return {
     type: NodeTypes.JS_OBJECT_EXPRESSION,
-    properties: Object.keys(obj).map(key => {
-      return {
-        type: NodeTypes.JS_PROPERTY,
-        key: {
-          type: NodeTypes.SIMPLE_EXPRESSION,
-          isStatic: !/^\[/.test(key),
-          content: key.replace(/^\[|\]$/g, '')
-        },
-        value: obj[key]
-      }
-    })
+    properties: Object.keys(obj)
+      .map(key => {
+        return {
+          type: NodeTypes.JS_PROPERTY,
+          key: {
+            type: NodeTypes.SIMPLE_EXPRESSION,
+            isStatic: !/^\[/.test(key),
+            content: key.replace(/^\[|\]$/g, '')
+          },
+          value: obj[key]
+        } as any
+      })
+      .concat({
+        key: { content: `_compiled` },
+        value: { content: `true` }
+      })
   }
 }
 
@@ -59,7 +81,7 @@ describe('compiler: transform component slots', () => {
     expect(slots).toMatchObject(
       createSlotMatcher({
         default: {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: undefined,
           returns: [
             {
@@ -81,7 +103,7 @@ describe('compiler: transform component slots', () => {
     expect(slots).toMatchObject(
       createSlotMatcher({
         default: {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: {
             type: NodeTypes.COMPOUND_EXPRESSION,
             children: [`{ `, { content: `foo` }, ` }`]
@@ -121,11 +143,10 @@ describe('compiler: transform component slots', () => {
     expect(slots).toMatchObject(
       createSlotMatcher({
         one: {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: {
-            type: NodeTypes.SIMPLE_EXPRESSION,
-            content: `{ foo }`,
-            isStatic: false
+            type: NodeTypes.COMPOUND_EXPRESSION,
+            children: [`{ `, { content: `foo` }, ` }`]
           },
           returns: [
             {
@@ -143,11 +164,10 @@ describe('compiler: transform component slots', () => {
           ]
         },
         two: {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: {
-            type: NodeTypes.SIMPLE_EXPRESSION,
-            content: `{ bar }`,
-            isStatic: false
+            type: NodeTypes.COMPOUND_EXPRESSION,
+            children: [`{ `, { content: `bar` }, ` }`]
           },
           returns: [
             {
@@ -184,11 +204,10 @@ describe('compiler: transform component slots', () => {
     expect(slots).toMatchObject(
       createSlotMatcher({
         '[_ctx.one]': {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: {
-            type: NodeTypes.SIMPLE_EXPRESSION,
-            content: `{ foo }`,
-            isStatic: false
+            type: NodeTypes.COMPOUND_EXPRESSION,
+            children: [`{ `, { content: `foo` }, ` }`]
           },
           returns: [
             {
@@ -206,11 +225,10 @@ describe('compiler: transform component slots', () => {
           ]
         },
         '[_ctx.two]': {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: {
-            type: NodeTypes.SIMPLE_EXPRESSION,
-            content: `{ bar }`,
-            isStatic: false
+            type: NodeTypes.COMPOUND_EXPRESSION,
+            children: [`{ `, { content: `bar` }, ` }`]
           },
           returns: [
             {
@@ -247,11 +265,10 @@ describe('compiler: transform component slots', () => {
     expect(slots).toMatchObject(
       createSlotMatcher({
         default: {
-          type: NodeTypes.JS_SLOT_FUNCTION,
+          type: NodeTypes.JS_FUNCTION_EXPRESSION,
           params: {
-            type: NodeTypes.SIMPLE_EXPRESSION,
-            content: `{ foo }`,
-            isStatic: false
+            type: NodeTypes.COMPOUND_EXPRESSION,
+            children: [`{ `, { content: `foo` }, ` }`]
           },
           returns: [
             {
@@ -260,10 +277,10 @@ describe('compiler: transform component slots', () => {
                 type: NodeTypes.JS_CALL_EXPRESSION,
                 arguments: [
                   `_component_Inner`,
-                  `0`,
+                  `null`,
                   createSlotMatcher({
                     default: {
-                      type: NodeTypes.JS_SLOT_FUNCTION,
+                      type: NodeTypes.JS_FUNCTION_EXPRESSION,
                       params: {
                         type: NodeTypes.COMPOUND_EXPRESSION,
                         children: [`{ `, { content: `bar` }, ` }`]
@@ -289,11 +306,18 @@ describe('compiler: transform component slots', () => {
                         }
                       ]
                     }
-                  })
+                  }),
+                  // nested slot should be forced dynamic, since scope variables
+                  // are not tracked as dependencies of the slot.
+                  genFlagText(PatchFlags.DYNAMIC_SLOTS)
                 ]
               }
             },
             // test scope
+            {
+              type: NodeTypes.TEXT,
+              content: ` `
+            },
             {
               type: NodeTypes.INTERPOLATION,
               content: {
@@ -319,118 +343,384 @@ describe('compiler: transform component slots', () => {
     expect(generate(root, { prefixIdentifiers: true }).code).toMatchSnapshot()
   })
 
-  test('error on extraneous children w/ named slots', () => {
-    const onError = jest.fn()
-    const source = `<Comp><template #default>foo</template>bar</Comp>`
-    parseWithSlots(source, { onError })
-    const index = source.indexOf('bar')
-    expect(onError.mock.calls[0][0]).toMatchObject({
-      code: ErrorCodes.X_EXTRANEOUS_NON_SLOT_CHILDREN,
-      loc: {
-        source: `bar`,
-        start: {
-          offset: index,
-          line: 1,
-          column: index + 1
-        },
-        end: {
-          offset: index + 3,
-          line: 1,
-          column: index + 4
-        }
-      }
-    })
+  test('should force dynamic when inside v-for', () => {
+    const { root } = parseWithSlots(
+      `<div v-for="i in list">
+        <Comp v-slot="bar">foo</Comp>
+      </div>`
+    )
+    const div = ((root.children[0] as ForNode).children[0] as ElementNode)
+      .codegenNode as any
+    const comp = div.arguments[2][0]
+    expect(comp.codegenNode.arguments[3]).toBe(
+      genFlagText(PatchFlags.DYNAMIC_SLOTS)
+    )
   })
 
-  test('error on duplicated slot names', () => {
-    const onError = jest.fn()
-    const source = `<Comp><template #foo></template><template #foo></template></Comp>`
-    parseWithSlots(source, { onError })
-    const index = source.lastIndexOf('#foo')
-    expect(onError.mock.calls[0][0]).toMatchObject({
-      code: ErrorCodes.X_DUPLICATE_SLOT_NAMES,
-      loc: {
-        source: `#foo`,
-        start: {
-          offset: index,
-          line: 1,
-          column: index + 1
-        },
-        end: {
-          offset: index + 4,
-          line: 1,
-          column: index + 5
-        }
+  test('should only force dynamic slots when actually using scope vars w/ prefixIdentifiers: true', () => {
+    function assertDynamicSlots(template: string, shouldForce: boolean) {
+      const { root } = parseWithSlots(template, { prefixIdentifiers: true })
+      let flag: any
+      if (root.children[0].type === NodeTypes.FOR) {
+        const div = (root.children[0].children[0] as ElementNode)
+          .codegenNode as any
+        const comp = div.arguments[2][0]
+        flag = comp.codegenNode.arguments[3]
+      } else {
+        const innerComp = (root.children[0] as ComponentNode)
+          .children[0] as ComponentNode
+        flag = (innerComp.codegenNode as CallExpression).arguments[3]
       }
-    })
+      if (shouldForce) {
+        expect(flag).toBe(genFlagText(PatchFlags.DYNAMIC_SLOTS))
+      } else {
+        expect(flag).toBeUndefined()
+      }
+    }
+
+    assertDynamicSlots(
+      `<div v-for="i in list">
+        <Comp v-slot="bar">foo</Comp>
+      </div>`,
+      false
+    )
+
+    assertDynamicSlots(
+      `<div v-for="i in list">
+        <Comp v-slot="bar">{{ i }}</Comp>
+      </div>`,
+      true
+    )
+
+    // reference the component's own slot variable should not force dynamic slots
+    assertDynamicSlots(
+      `<Comp v-slot="foo">
+        <Comp v-slot="bar">{{ bar }}</Comp>
+      </Comp>`,
+      false
+    )
+
+    assertDynamicSlots(
+      `<Comp v-slot="foo">
+        <Comp v-slot="bar">{{ foo }}</Comp>
+      </Comp>`,
+      true
+    )
   })
 
-  test('error on invalid mixed slot usage', () => {
-    const onError = jest.fn()
-    const source = `<Comp v-slot="foo"><template #foo></template></Comp>`
-    parseWithSlots(source, { onError })
-    const index = source.lastIndexOf('#foo')
-    expect(onError.mock.calls[0][0]).toMatchObject({
-      code: ErrorCodes.X_MIXED_SLOT_USAGE,
-      loc: {
-        source: `#foo`,
-        start: {
-          offset: index,
-          line: 1,
-          column: index + 1
-        },
-        end: {
-          offset: index + 4,
-          line: 1,
-          column: index + 5
+  test('named slot with v-if', () => {
+    const { root, slots } = parseWithSlots(
+      `<Comp>
+        <template #one v-if="ok">hello</template>
+      </Comp>`
+    )
+    expect(slots).toMatchObject({
+      type: NodeTypes.JS_CALL_EXPRESSION,
+      callee: CREATE_SLOTS,
+      arguments: [
+        createObjectMatcher({
+          _compiled: `[true]`
+        }),
+        {
+          type: NodeTypes.JS_ARRAY_EXPRESSION,
+          elements: [
+            {
+              type: NodeTypes.JS_CONDITIONAL_EXPRESSION,
+              test: { content: `ok` },
+              consequent: createObjectMatcher({
+                name: `one`,
+                fn: {
+                  type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                  returns: [{ type: NodeTypes.TEXT, content: `hello` }]
+                }
+              }),
+              alternate: {
+                content: `undefined`,
+                isStatic: false
+              }
+            }
+          ]
         }
-      }
+      ]
     })
+    expect((root as any).children[0].codegenNode.arguments[3]).toMatch(
+      PatchFlags.DYNAMIC_SLOTS + ''
+    )
+    expect(generate(root).code).toMatchSnapshot()
   })
 
-  test('error on v-slot usage on plain elements', () => {
-    const onError = jest.fn()
-    const source = `<div v-slot/>`
-    parseWithSlots(source, { onError })
-    const index = source.indexOf('v-slot')
-    expect(onError.mock.calls[0][0]).toMatchObject({
-      code: ErrorCodes.X_MISPLACED_V_SLOT,
-      loc: {
-        source: `v-slot`,
-        start: {
-          offset: index,
-          line: 1,
-          column: index + 1
-        },
-        end: {
-          offset: index + 6,
-          line: 1,
-          column: index + 7
+  test('named slot with v-if + prefixIdentifiers: true', () => {
+    const { root, slots } = parseWithSlots(
+      `<Comp>
+        <template #one="props" v-if="ok">{{ props }}</template>
+      </Comp>`,
+      { prefixIdentifiers: true }
+    )
+    expect(slots).toMatchObject({
+      type: NodeTypes.JS_CALL_EXPRESSION,
+      callee: CREATE_SLOTS,
+      arguments: [
+        createObjectMatcher({
+          _compiled: `[true]`
+        }),
+        {
+          type: NodeTypes.JS_ARRAY_EXPRESSION,
+          elements: [
+            {
+              type: NodeTypes.JS_CONDITIONAL_EXPRESSION,
+              test: { content: `_ctx.ok` },
+              consequent: createObjectMatcher({
+                name: `one`,
+                fn: {
+                  type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                  params: { content: `props` },
+                  returns: [
+                    {
+                      type: NodeTypes.INTERPOLATION,
+                      content: { content: `props` }
+                    }
+                  ]
+                }
+              }),
+              alternate: {
+                content: `undefined`,
+                isStatic: false
+              }
+            }
+          ]
         }
-      }
+      ]
     })
+    expect((root as any).children[0].codegenNode.arguments[3]).toMatch(
+      PatchFlags.DYNAMIC_SLOTS + ''
+    )
+    expect(generate(root, { prefixIdentifiers: true }).code).toMatchSnapshot()
   })
 
-  test('error on named slot on component', () => {
-    const onError = jest.fn()
-    const source = `<Comp v-slot:foo>foo</Comp>`
-    parseWithSlots(source, { onError })
-    const index = source.indexOf('v-slot')
-    expect(onError.mock.calls[0][0]).toMatchObject({
-      code: ErrorCodes.X_NAMED_SLOT_ON_COMPONENT,
-      loc: {
-        source: `v-slot:foo`,
-        start: {
-          offset: index,
-          line: 1,
-          column: index + 1
-        },
-        end: {
-          offset: index + 10,
-          line: 1,
-          column: index + 11
+  test('named slot with v-if + v-else-if + v-else', () => {
+    const { root, slots } = parseWithSlots(
+      `<Comp>
+        <template #one v-if="ok">foo</template>
+        <template #two="props" v-else-if="orNot">bar</template>
+        <template #one v-else>baz</template>
+      </Comp>`
+    )
+    expect(slots).toMatchObject({
+      type: NodeTypes.JS_CALL_EXPRESSION,
+      callee: CREATE_SLOTS,
+      arguments: [
+        createObjectMatcher({
+          _compiled: `[true]`
+        }),
+        {
+          type: NodeTypes.JS_ARRAY_EXPRESSION,
+          elements: [
+            {
+              type: NodeTypes.JS_CONDITIONAL_EXPRESSION,
+              test: { content: `ok` },
+              consequent: createObjectMatcher({
+                name: `one`,
+                fn: {
+                  type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                  params: undefined,
+                  returns: [{ type: NodeTypes.TEXT, content: `foo` }]
+                }
+              }),
+              alternate: {
+                type: NodeTypes.JS_CONDITIONAL_EXPRESSION,
+                test: { content: `orNot` },
+                consequent: createObjectMatcher({
+                  name: `two`,
+                  fn: {
+                    type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                    params: { content: `props` },
+                    returns: [{ type: NodeTypes.TEXT, content: `bar` }]
+                  }
+                }),
+                alternate: createObjectMatcher({
+                  name: `one`,
+                  fn: {
+                    type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                    params: undefined,
+                    returns: [{ type: NodeTypes.TEXT, content: `baz` }]
+                  }
+                })
+              }
+            }
+          ]
         }
-      }
+      ]
+    })
+    expect((root as any).children[0].codegenNode.arguments[3]).toMatch(
+      PatchFlags.DYNAMIC_SLOTS + ''
+    )
+    expect(generate(root).code).toMatchSnapshot()
+  })
+
+  test('named slot with v-for w/ prefixIdentifiers: true', () => {
+    const { root, slots } = parseWithSlots(
+      `<Comp>
+        <template v-for="name in list" #[name]>{{ name }}</template>
+      </Comp>`,
+      { prefixIdentifiers: true }
+    )
+    expect(slots).toMatchObject({
+      type: NodeTypes.JS_CALL_EXPRESSION,
+      callee: CREATE_SLOTS,
+      arguments: [
+        createObjectMatcher({
+          _compiled: `[true]`
+        }),
+        {
+          type: NodeTypes.JS_ARRAY_EXPRESSION,
+          elements: [
+            {
+              type: NodeTypes.JS_CALL_EXPRESSION,
+              callee: RENDER_LIST,
+              arguments: [
+                { content: `_ctx.list` },
+                {
+                  type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                  params: [{ content: `name` }],
+                  returns: createObjectMatcher({
+                    name: `[name]`,
+                    fn: {
+                      type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                      returns: [
+                        {
+                          type: NodeTypes.INTERPOLATION,
+                          content: { content: `name`, isStatic: false }
+                        }
+                      ]
+                    }
+                  })
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    })
+    expect((root as any).children[0].codegenNode.arguments[3]).toMatch(
+      PatchFlags.DYNAMIC_SLOTS + ''
+    )
+    expect(generate(root, { prefixIdentifiers: true }).code).toMatchSnapshot()
+  })
+
+  describe('errors', () => {
+    test('error on extraneous children w/ named slots', () => {
+      const onError = jest.fn()
+      const source = `<Comp><template #default>foo</template>bar</Comp>`
+      parseWithSlots(source, { onError })
+      const index = source.indexOf('bar')
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        code: ErrorCodes.X_V_SLOT_EXTRANEOUS_NON_SLOT_CHILDREN,
+        loc: {
+          source: `bar`,
+          start: {
+            offset: index,
+            line: 1,
+            column: index + 1
+          },
+          end: {
+            offset: index + 3,
+            line: 1,
+            column: index + 4
+          }
+        }
+      })
+    })
+
+    test('error on duplicated slot names', () => {
+      const onError = jest.fn()
+      const source = `<Comp><template #foo></template><template #foo></template></Comp>`
+      parseWithSlots(source, { onError })
+      const index = source.lastIndexOf('#foo')
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        code: ErrorCodes.X_V_SLOT_DUPLICATE_SLOT_NAMES,
+        loc: {
+          source: `#foo`,
+          start: {
+            offset: index,
+            line: 1,
+            column: index + 1
+          },
+          end: {
+            offset: index + 4,
+            line: 1,
+            column: index + 5
+          }
+        }
+      })
+    })
+
+    test('error on invalid mixed slot usage', () => {
+      const onError = jest.fn()
+      const source = `<Comp v-slot="foo"><template #foo></template></Comp>`
+      parseWithSlots(source, { onError })
+      const index = source.lastIndexOf('#foo')
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        code: ErrorCodes.X_V_SLOT_MIXED_SLOT_USAGE,
+        loc: {
+          source: `#foo`,
+          start: {
+            offset: index,
+            line: 1,
+            column: index + 1
+          },
+          end: {
+            offset: index + 4,
+            line: 1,
+            column: index + 5
+          }
+        }
+      })
+    })
+
+    test('error on v-slot usage on plain elements', () => {
+      const onError = jest.fn()
+      const source = `<div v-slot/>`
+      parseWithSlots(source, { onError })
+      const index = source.indexOf('v-slot')
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        code: ErrorCodes.X_V_SLOT_MISPLACED,
+        loc: {
+          source: `v-slot`,
+          start: {
+            offset: index,
+            line: 1,
+            column: index + 1
+          },
+          end: {
+            offset: index + 6,
+            line: 1,
+            column: index + 7
+          }
+        }
+      })
+    })
+
+    test('error on named slot on component', () => {
+      const onError = jest.fn()
+      const source = `<Comp v-slot:foo>foo</Comp>`
+      parseWithSlots(source, { onError })
+      const index = source.indexOf('v-slot')
+      expect(onError.mock.calls[0][0]).toMatchObject({
+        code: ErrorCodes.X_V_SLOT_NAMED_SLOT_ON_COMPONENT,
+        loc: {
+          source: `v-slot:foo`,
+          start: {
+            offset: index,
+            line: 1,
+            column: index + 1
+          },
+          end: {
+            offset: index + 10,
+            line: 1,
+            column: index + 11
+          }
+        }
+      })
     })
   })
 })

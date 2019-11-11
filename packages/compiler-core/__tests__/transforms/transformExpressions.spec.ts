@@ -5,7 +5,6 @@ import {
   DirectiveNode,
   NodeTypes,
   CompilerOptions,
-  IfNode,
   InterpolationNode
 } from '../../src'
 import { transformIf } from '../../src/transforms/vIf'
@@ -31,6 +30,24 @@ describe('compiler: expression transform', () => {
       type: NodeTypes.SIMPLE_EXPRESSION,
       content: `_ctx.foo`
     })
+  })
+
+  test('empty interpolation', () => {
+    const node = parseWithExpressionTransform(`{{}}`) as InterpolationNode
+    const node2 = parseWithExpressionTransform(`{{ }}`) as InterpolationNode
+    const node3 = parseWithExpressionTransform(
+      `<div>{{ }}</div>`
+    ) as ElementNode
+
+    const objectToBeMatched = {
+      type: NodeTypes.SIMPLE_EXPRESSION,
+      content: ``
+    }
+    expect(node.content).toMatchObject(objectToBeMatched)
+    expect(node2.content).toMatchObject(objectToBeMatched)
+    expect((node3.children[0] as InterpolationNode).content).toMatchObject(
+      objectToBeMatched
+    )
   })
 
   test('interpolation (children)', () => {
@@ -159,14 +176,6 @@ describe('compiler: expression transform', () => {
     })
   })
 
-  test('should prefix v-if condition', () => {
-    const node = parseWithExpressionTransform(`<div v-if="ok"/>`) as IfNode
-    expect(node.branches[0].condition).toMatchObject({
-      type: NodeTypes.SIMPLE_EXPRESSION,
-      content: `_ctx.ok`
-    })
-  })
-
   test('should not prefix whitelisted globals', () => {
     const node = parseWithExpressionTransform(
       `{{ Math.max(1, 2) }}`
@@ -175,6 +184,22 @@ describe('compiler: expression transform', () => {
       type: NodeTypes.COMPOUND_EXPRESSION,
       children: [{ content: `Math` }, `.`, { content: `max` }, `(1, 2)`]
     })
+  })
+
+  test('should not prefix reserved literals', () => {
+    function assert(exp: string) {
+      const node = parseWithExpressionTransform(
+        `{{ ${exp} }}`
+      ) as InterpolationNode
+      expect(node.content).toMatchObject({
+        type: NodeTypes.SIMPLE_EXPRESSION,
+        content: exp
+      })
+    }
+    assert(`true`)
+    assert(`false`)
+    assert(`null`)
+    assert(`this`)
   })
 
   test('should not prefix id of a function declaration', () => {
@@ -354,6 +379,8 @@ describe('compiler: expression transform', () => {
   test('should handle parse error', () => {
     const onError = jest.fn()
     parseWithExpressionTransform(`{{ a( }}`, { onError })
-    expect(onError.mock.calls[0][0].message).toMatch(`Expected ')'`)
+    expect(onError.mock.calls[0][0].message).toMatch(
+      `Invalid JavaScript expression. (1:4)`
+    )
   })
 })

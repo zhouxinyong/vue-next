@@ -2,13 +2,18 @@
 // and the compiler, and supports on-the-fly compilation of the template option.
 import { compile, CompilerOptions } from '@vue/compiler-dom'
 import { registerRuntimeCompiler, RenderFunction } from '@vue/runtime-dom'
+import * as runtimeDom from '@vue/runtime-dom'
 
 function compileToFunction(
   template: string,
   options?: CompilerOptions
 ): RenderFunction {
-  const { code } = compile(template, options)
-  return new Function(code)() as RenderFunction
+  const { code } = compile(template, {
+    hoistStatic: true,
+    ...options
+  })
+
+  return new Function('Vue', code)(runtimeDom) as RenderFunction
 }
 
 registerRuntimeCompiler(compileToFunction)

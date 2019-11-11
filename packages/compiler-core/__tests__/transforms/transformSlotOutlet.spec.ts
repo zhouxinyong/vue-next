@@ -10,8 +10,8 @@ import { transformElement } from '../../src/transforms/transformElement'
 import { transformOn } from '../../src/transforms/vOn'
 import { transformBind } from '../../src/transforms/vBind'
 import { transformExpression } from '../../src/transforms/transformExpression'
-import { RENDER_SLOT } from '../../src/runtimeConstants'
-import { transformSlotOutlet } from '../../src/transforms/transfromSlotOutlet'
+import { RENDER_SLOT } from '../../src/runtimeHelpers'
+import { transformSlotOutlet } from '../../src/transforms/transformSlotOutlet'
 
 function parseWithSlots(template: string, options: CompilerOptions = {}) {
   const ast = parse(template)
@@ -35,8 +35,8 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot/>`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
-      arguments: [`$slots.default`]
+      callee: RENDER_SLOT,
+      arguments: [`$slots`, `"default"`]
     })
   })
 
@@ -44,17 +44,8 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot name="foo" />`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
-      arguments: [`$slots.foo`]
-    })
-  })
-
-  test('statically named slot outlet w/ name that needs quotes', () => {
-    const ast = parseWithSlots(`<slot name="foo-bar" />`)
-    expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
-      type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
-      arguments: [`$slots["foo-bar"]`]
+      callee: RENDER_SLOT,
+      arguments: [`$slots`, `"foo"`]
     })
   })
 
@@ -62,19 +53,13 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot :name="foo" />`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
+        `$slots`,
         {
-          type: NodeTypes.COMPOUND_EXPRESSION,
-          children: [
-            `$slots[`,
-            {
-              type: NodeTypes.SIMPLE_EXPRESSION,
-              content: `foo`,
-              isStatic: false
-            },
-            `]`
-          ]
+          type: NodeTypes.SIMPLE_EXPRESSION,
+          content: `foo`,
+          isStatic: false
         }
       ]
     })
@@ -88,10 +73,10 @@ describe('compiler: transform <slot> outlets', () => {
       type: NodeTypes.JS_CALL_EXPRESSION,
       callee: RENDER_SLOT,
       arguments: [
+        `_ctx.$slots`,
         {
           type: NodeTypes.COMPOUND_EXPRESSION,
           children: [
-            `_ctx.$slots[`,
             {
               type: NodeTypes.SIMPLE_EXPRESSION,
               content: `_ctx.foo`,
@@ -102,8 +87,7 @@ describe('compiler: transform <slot> outlets', () => {
               type: NodeTypes.SIMPLE_EXPRESSION,
               content: `_ctx.bar`,
               isStatic: false
-            },
-            `]`
+            }
           ]
         }
       ]
@@ -114,9 +98,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot foo="bar" :baz="qux" />`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        `$slots.default`,
+        `$slots`,
+        `"default"`,
         {
           type: NodeTypes.JS_OBJECT_EXPRESSION,
           properties: [
@@ -150,9 +135,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot name="foo" foo="bar" :baz="qux" />`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        `$slots.foo`,
+        `$slots`,
+        `"foo"`,
         {
           type: NodeTypes.JS_OBJECT_EXPRESSION,
           // props should not include name
@@ -187,12 +173,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot :name="foo" foo="bar" :baz="qux" />`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        {
-          type: NodeTypes.COMPOUND_EXPRESSION,
-          children: [`$slots[`, { content: `foo` }, `]`]
-        },
+        `$slots`,
+        { content: `foo`, isStatic: false },
         {
           type: NodeTypes.JS_OBJECT_EXPRESSION,
           // props should not include name
@@ -227,9 +211,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot><div/></slot>`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        `$slots.default`,
+        `$slots`,
+        `"default"`,
         `{}`,
         [
           {
@@ -245,9 +230,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot name="foo"><div/></slot>`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        `$slots.foo`,
+        `$slots`,
+        `"foo"`,
         `{}`,
         [
           {
@@ -263,9 +249,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot :foo="bar"><div/></slot>`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        `$slots.default`,
+        `$slots`,
+        `"default"`,
         {
           type: NodeTypes.JS_OBJECT_EXPRESSION,
           properties: [
@@ -295,9 +282,10 @@ describe('compiler: transform <slot> outlets', () => {
     const ast = parseWithSlots(`<slot name="foo" :foo="bar"><div/></slot>`)
     expect((ast.children[0] as ElementNode).codegenNode).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${RENDER_SLOT}`,
+      callee: RENDER_SLOT,
       arguments: [
-        `$slots.foo`,
+        `$slots`,
+        `"foo"`,
         {
           type: NodeTypes.JS_OBJECT_EXPRESSION,
           properties: [
@@ -329,7 +317,7 @@ describe('compiler: transform <slot> outlets', () => {
     parseWithSlots(source, { onError })
     const index = source.indexOf('v-foo')
     expect(onError.mock.calls[0][0]).toMatchObject({
-      code: ErrorCodes.X_UNEXPECTED_DIRECTIVE_ON_SLOT_OUTLET,
+      code: ErrorCodes.X_V_SLOT_UNEXPECTED_DIRECTIVE_ON_SLOT_OUTLET,
       loc: {
         source: `v-foo`,
         start: {

@@ -1,29 +1,40 @@
 const fs = require('fs')
+const chalk = require('chalk')
 
 const targets = (exports.targets = fs.readdirSync('packages').filter(f => {
   if (!fs.statSync(`packages/${f}`).isDirectory()) {
     return false
   }
   const pkg = require(`../packages/${f}/package.json`)
-  if (pkg.private) {
+  if (pkg.private && !pkg.buildOptions) {
     return false
   }
   return true
 }))
 
-exports.fuzzyMatchTarget = (partialTarget, includeAllMatching) => {
+exports.fuzzyMatchTarget = (partialTargets, includeAllMatching) => {
   const matched = []
-  for (const target of targets) {
-    if (target.match(partialTarget)) {
-      matched.push(target)
-      if (!includeAllMatching) {
-        return matched
+  partialTargets.forEach(partialTarget => {
+    for (const target of targets) {
+      if (target.match(partialTarget)) {
+        matched.push(target)
+        if (!includeAllMatching) {
+          break
+        }
       }
     }
-  }
+  })
   if (matched.length) {
     return matched
   } else {
-    throw new Error(`Target ${partialTarget} not found!`)
+    console.log()
+    console.error(
+      `  ${chalk.bgRed.white(' ERROR ')} ${chalk.red(
+        `Target ${chalk.underline(partialTargets)} not found!`
+      )}`
+    )
+    console.log()
+
+    process.exit(1)
   }
 }

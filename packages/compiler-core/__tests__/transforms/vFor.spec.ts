@@ -1,253 +1,282 @@
 import { parse } from '../../src/parse'
 import { transform } from '../../src/transform'
+import { transformIf } from '../../src/transforms/vIf'
 import { transformFor } from '../../src/transforms/vFor'
+import { transformBind } from '../../src/transforms/vBind'
+import { transformElement } from '../../src/transforms/transformElement'
+import { transformSlotOutlet } from '../../src/transforms/transformSlotOutlet'
+import { transformExpression } from '../../src/transforms/transformExpression'
 import {
   ForNode,
   NodeTypes,
   SimpleExpressionNode,
   ElementNode,
-  InterpolationNode
+  InterpolationNode,
+  CallExpression,
+  SequenceExpression
 } from '../../src/ast'
 import { ErrorCodes } from '../../src/errors'
-import { CompilerOptions } from '../../src'
-import { transformExpression } from '../../src/transforms/transformExpression'
+import { CompilerOptions, generate } from '../../src'
+import {
+  OPEN_BLOCK,
+  CREATE_BLOCK,
+  FRAGMENT,
+  RENDER_LIST,
+  RENDER_SLOT,
+  WITH_DIRECTIVES
+} from '../../src/runtimeHelpers'
+import { PatchFlags } from '@vue/runtime-dom'
+import { createObjectMatcher, genFlagText } from '../testUtils'
 
 function parseWithForTransform(
   template: string,
   options: CompilerOptions = {}
 ) {
-  const node = parse(template, options)
-  transform(node, {
+  const ast = parse(template, options)
+  transform(ast, {
     nodeTransforms: [
+      transformIf,
       transformFor,
-      ...(options.prefixIdentifiers ? [transformExpression] : [])
+      ...(options.prefixIdentifiers ? [transformExpression] : []),
+      transformSlotOutlet,
+      transformElement
     ],
+    directiveTransforms: {
+      bind: transformBind
+    },
     ...options
   })
-  return node.children[0]
+  return {
+    root: ast,
+    node: ast.children[0] as ForNode
+  }
 }
 
-describe('compiler: transform v-for', () => {
-  test('number expression', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="index in 5" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('index')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('5')
+describe('compiler: v-for', () => {
+  describe('transform', () => {
+    test('number expression', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="index in 5" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('index')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('5')
+    })
+
+    test('value', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="(item) in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('object de-structured value', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="({ id, value }) in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe(
+        '{ id, value }'
+      )
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('array de-structured value', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="([ id, value ]) in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe(
+        '[ id, value ]'
+      )
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('value and key', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="(item, key) in items" />'
+      )
+      expect(forNode.keyAlias).not.toBeUndefined()
+      expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('value, key and index', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="(value, key, index) in items" />'
+      )
+      expect(forNode.keyAlias).not.toBeUndefined()
+      expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
+      expect(forNode.objectIndexAlias).not.toBeUndefined()
+      expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
+        'index'
+      )
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('skipped key', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="(value,,index) in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).not.toBeUndefined()
+      expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
+        'index'
+      )
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('skipped value and key', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="(,,index) in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).not.toBeUndefined()
+      expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
+        'index'
+      )
+      expect(forNode.valueAlias).toBeUndefined()
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('unbracketed value', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="item in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('unbracketed value and key', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="item, key in items" />'
+      )
+      expect(forNode.keyAlias).not.toBeUndefined()
+      expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
+      expect(forNode.objectIndexAlias).toBeUndefined()
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('unbracketed value, key and index', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="value, key, index in items" />'
+      )
+      expect(forNode.keyAlias).not.toBeUndefined()
+      expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
+      expect(forNode.objectIndexAlias).not.toBeUndefined()
+      expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
+        'index'
+      )
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('unbracketed skipped key', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for="value, , index in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).not.toBeUndefined()
+      expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
+        'index'
+      )
+      expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
+
+    test('unbracketed skipped value and key', () => {
+      const { node: forNode } = parseWithForTransform(
+        '<span v-for=", , index in items" />'
+      )
+      expect(forNode.keyAlias).toBeUndefined()
+      expect(forNode.objectIndexAlias).not.toBeUndefined()
+      expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
+        'index'
+      )
+      expect(forNode.valueAlias).toBeUndefined()
+      expect((forNode.source as SimpleExpressionNode).content).toBe('items')
+    })
   })
 
-  test('value', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="(item) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+  describe('errors', () => {
+    test('missing expression', () => {
+      const onError = jest.fn()
+      parseWithForTransform('<span v-for />', { onError })
 
-  test('object de-structured value', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="({ id, value }) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe(
-      '{ id, value }'
-    )
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: ErrorCodes.X_V_FOR_NO_EXPRESSION
+        })
+      )
+    })
 
-  test('array de-structured value', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="([ id, value ]) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe(
-      '[ id, value ]'
-    )
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+    test('empty expression', () => {
+      const onError = jest.fn()
+      parseWithForTransform('<span v-for="" />', { onError })
 
-  test('value and key', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="(item, key) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).not.toBeUndefined()
-    expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION
+        })
+      )
+    })
 
-  test('value, key and index', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="(value, key, index) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).not.toBeUndefined()
-    expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
-    expect(forNode.objectIndexAlias).not.toBeUndefined()
-    expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
-      'index'
-    )
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+    test('invalid expression', () => {
+      const onError = jest.fn()
+      parseWithForTransform('<span v-for="items" />', { onError })
 
-  test('skipped key', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="(value,,index) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).not.toBeUndefined()
-    expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
-      'index'
-    )
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION
+        })
+      )
+    })
 
-  test('skipped value and key', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="(,,index) in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).not.toBeUndefined()
-    expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
-      'index'
-    )
-    expect(forNode.valueAlias).toBeUndefined()
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+    test('missing source', () => {
+      const onError = jest.fn()
+      parseWithForTransform('<span v-for="item in" />', { onError })
 
-  test('unbracketed value', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="item in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION
+        })
+      )
+    })
 
-  test('unbracketed value and key', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="item, key in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).not.toBeUndefined()
-    expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
-    expect(forNode.objectIndexAlias).toBeUndefined()
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('item')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
+    test('missing value', () => {
+      const onError = jest.fn()
+      parseWithForTransform('<span v-for="in items" />', { onError })
 
-  test('unbracketed value, key and index', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="value, key, index in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).not.toBeUndefined()
-    expect((forNode.keyAlias as SimpleExpressionNode).content).toBe('key')
-    expect(forNode.objectIndexAlias).not.toBeUndefined()
-    expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
-      'index'
-    )
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
-
-  test('unbracketed skipped key', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for="value, , index in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).not.toBeUndefined()
-    expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
-      'index'
-    )
-    expect((forNode.valueAlias as SimpleExpressionNode).content).toBe('value')
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
-
-  test('unbracketed skipped value and key', () => {
-    const forNode = parseWithForTransform(
-      '<span v-for=", , index in items" />'
-    ) as ForNode
-    expect(forNode.keyAlias).toBeUndefined()
-    expect(forNode.objectIndexAlias).not.toBeUndefined()
-    expect((forNode.objectIndexAlias as SimpleExpressionNode).content).toBe(
-      'index'
-    )
-    expect(forNode.valueAlias).toBeUndefined()
-    expect((forNode.source as SimpleExpressionNode).content).toBe('items')
-  })
-
-  test('missing expression', () => {
-    const onError = jest.fn()
-    parseWithForTransform('<span v-for />', { onError })
-
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        code: ErrorCodes.X_FOR_NO_EXPRESSION
-      })
-    )
-  })
-
-  test('empty expression', () => {
-    const onError = jest.fn()
-    parseWithForTransform('<span v-for="" />', { onError })
-
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        code: ErrorCodes.X_FOR_MALFORMED_EXPRESSION
-      })
-    )
-  })
-
-  test('invalid expression', () => {
-    const onError = jest.fn()
-    parseWithForTransform('<span v-for="items" />', { onError })
-
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        code: ErrorCodes.X_FOR_MALFORMED_EXPRESSION
-      })
-    )
-  })
-
-  test('missing source', () => {
-    const onError = jest.fn()
-    parseWithForTransform('<span v-for="item in" />', { onError })
-
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        code: ErrorCodes.X_FOR_MALFORMED_EXPRESSION
-      })
-    )
-  })
-
-  test('missing value', () => {
-    const onError = jest.fn()
-    parseWithForTransform('<span v-for="in items" />', { onError })
-
-    expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        code: ErrorCodes.X_FOR_MALFORMED_EXPRESSION
-      })
-    )
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: ErrorCodes.X_V_FOR_MALFORMED_EXPRESSION
+        })
+      )
+    })
   })
 
   describe('source location', () => {
     test('value & source', () => {
       const source = '<span v-for="item in items" />'
-      const forNode = parseWithForTransform(source) as ForNode
+      const { node: forNode } = parseWithForTransform(source)
 
       const itemOffset = source.indexOf('item')
       const value = forNode.valueAlias as SimpleExpressionNode
@@ -271,7 +300,7 @@ describe('compiler: transform v-for', () => {
 
     test('bracketed value', () => {
       const source = '<span v-for="( item ) in items" />'
-      const forNode = parseWithForTransform(source) as ForNode
+      const { node: forNode } = parseWithForTransform(source)
 
       const itemOffset = source.indexOf('item')
       const value = forNode.valueAlias as SimpleExpressionNode
@@ -295,7 +324,7 @@ describe('compiler: transform v-for', () => {
 
     test('de-structured value', () => {
       const source = '<span v-for="(  { id, key }) in items" />'
-      const forNode = parseWithForTransform(source) as ForNode
+      const { node: forNode } = parseWithForTransform(source)
 
       const value = forNode.valueAlias as SimpleExpressionNode
       const valueIndex = source.indexOf('{ id, key }')
@@ -319,7 +348,7 @@ describe('compiler: transform v-for', () => {
 
     test('bracketed value, key, index', () => {
       const source = '<span v-for="( item, key, index ) in items" />'
-      const forNode = parseWithForTransform(source) as ForNode
+      const { node: forNode } = parseWithForTransform(source)
 
       const itemOffset = source.indexOf('item')
       const value = forNode.valueAlias as SimpleExpressionNode
@@ -361,7 +390,7 @@ describe('compiler: transform v-for', () => {
 
     test('skipped key', () => {
       const source = '<span v-for="( item,, index ) in items" />'
-      const forNode = parseWithForTransform(source) as ForNode
+      const { node: forNode } = parseWithForTransform(source)
 
       const itemOffset = source.indexOf('item')
       const value = forNode.valueAlias as SimpleExpressionNode
@@ -395,9 +424,9 @@ describe('compiler: transform v-for', () => {
 
   describe('prefixIdentifiers: true', () => {
     test('should prefix v-for source', () => {
-      const node = parseWithForTransform(`<div v-for="i in list"/>`, {
+      const { node } = parseWithForTransform(`<div v-for="i in list"/>`, {
         prefixIdentifiers: true
-      }) as ForNode
+      })
       expect(node.source).toMatchObject({
         type: NodeTypes.SIMPLE_EXPRESSION,
         content: `_ctx.list`
@@ -405,10 +434,10 @@ describe('compiler: transform v-for', () => {
     })
 
     test('should prefix v-for source w/ complex expression', () => {
-      const node = parseWithForTransform(
+      const { node } = parseWithForTransform(
         `<div v-for="i in list.concat([foo])"/>`,
         { prefixIdentifiers: true }
-      ) as ForNode
+      )
       expect(node.source).toMatchObject({
         type: NodeTypes.COMPOUND_EXPRESSION,
         children: [
@@ -423,10 +452,10 @@ describe('compiler: transform v-for', () => {
     })
 
     test('should not prefix v-for alias', () => {
-      const node = parseWithForTransform(
+      const { node } = parseWithForTransform(
         `<div v-for="i in list">{{ i }}{{ j }}</div>`,
         { prefixIdentifiers: true }
-      ) as ForNode
+      )
       const div = node.children[0] as ElementNode
       expect((div.children[0] as InterpolationNode).content).toMatchObject({
         type: NodeTypes.SIMPLE_EXPRESSION,
@@ -439,10 +468,10 @@ describe('compiler: transform v-for', () => {
     })
 
     test('should not prefix v-for aliases (multiple)', () => {
-      const node = parseWithForTransform(
+      const { node } = parseWithForTransform(
         `<div v-for="(i, j, k) in list">{{ i + j + k }}{{ l }}</div>`,
         { prefixIdentifiers: true }
-      ) as ForNode
+      )
       const div = node.children[0] as ElementNode
       expect((div.children[0] as InterpolationNode).content).toMatchObject({
         type: NodeTypes.COMPOUND_EXPRESSION,
@@ -461,10 +490,10 @@ describe('compiler: transform v-for', () => {
     })
 
     test('should prefix id outside of v-for', () => {
-      const node = parseWithForTransform(
+      const { node } = parseWithForTransform(
         `<div><div v-for="i in list" />{{ i }}</div>`,
         { prefixIdentifiers: true }
-      ) as ElementNode
+      )
       expect((node.children[1] as InterpolationNode).content).toMatchObject({
         type: NodeTypes.SIMPLE_EXPRESSION,
         content: `_ctx.i`
@@ -472,12 +501,12 @@ describe('compiler: transform v-for', () => {
     })
 
     test('nested v-for', () => {
-      const node = parseWithForTransform(
+      const { node } = parseWithForTransform(
         `<div v-for="i in list">
           <div v-for="i in list">{{ i + j }}</div>{{ i }}
         </div>`,
         { prefixIdentifiers: true }
-      ) as ForNode
+      )
       const outerDiv = node.children[0] as ElementNode
       const innerFor = outerDiv.children[0] as ForNode
       const innerExp = (innerFor.children[0] as ElementNode)
@@ -497,12 +526,12 @@ describe('compiler: transform v-for', () => {
     })
 
     test('v-for aliases w/ complex expressions', () => {
-      const node = parseWithForTransform(
+      const { node } = parseWithForTransform(
         `<div v-for="({ foo = bar, baz: [qux = quux] }) in list">
           {{ foo + bar + baz + qux + quux }}
         </div>`,
         { prefixIdentifiers: true }
-      ) as ForNode
+      )
       expect(node.valueAlias!).toMatchObject({
         type: NodeTypes.COMPOUND_EXPRESSION,
         children: [
@@ -532,6 +561,313 @@ describe('compiler: transform v-for', () => {
           { content: `_ctx.quux` }
         ]
       })
+    })
+  })
+
+  describe('codegen', () => {
+    function assertSharedCodegen(
+      node: SequenceExpression,
+      keyed: boolean = false,
+      customReturn: boolean = false
+    ) {
+      expect(node).toMatchObject({
+        type: NodeTypes.JS_SEQUENCE_EXPRESSION,
+        expressions: [
+          {
+            type: NodeTypes.JS_CALL_EXPRESSION,
+            callee: OPEN_BLOCK
+          },
+          {
+            type: NodeTypes.JS_CALL_EXPRESSION,
+            callee: CREATE_BLOCK,
+            arguments: [
+              FRAGMENT,
+              `null`,
+              {
+                type: NodeTypes.JS_CALL_EXPRESSION,
+                callee: RENDER_LIST,
+                arguments: [
+                  {}, // to be asserted by each test
+                  {
+                    type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                    returns: customReturn
+                      ? {}
+                      : {
+                          type: NodeTypes.JS_SEQUENCE_EXPRESSION,
+                          expressions: [
+                            {
+                              type: NodeTypes.JS_CALL_EXPRESSION,
+                              callee: OPEN_BLOCK
+                            },
+                            {
+                              type: NodeTypes.JS_CALL_EXPRESSION,
+                              callee: CREATE_BLOCK
+                            }
+                          ]
+                        }
+                  }
+                ]
+              },
+              keyed
+                ? genFlagText(PatchFlags.KEYED_FRAGMENT)
+                : genFlagText(PatchFlags.UNKEYED_FRAGMENT)
+            ]
+          }
+        ]
+      })
+      const renderListArgs = ((node.expressions[1] as CallExpression)
+        .arguments[2] as CallExpression).arguments
+      return {
+        source: renderListArgs[0] as SimpleExpressionNode,
+        params: (renderListArgs[1] as any).params,
+        returns: (renderListArgs[1] as any).returns,
+        blockArgs: customReturn
+          ? null
+          : (renderListArgs[1] as any).returns.expressions[1].arguments
+      }
+    }
+
+    test('basic v-for', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<span v-for="(item) in items" />')
+      expect(assertSharedCodegen(codegenNode)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }],
+        blockArgs: [`"span"`]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('value + key + index', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<span v-for="(item, key, index) in items" />')
+      expect(assertSharedCodegen(codegenNode)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }, { content: `key` }, { content: `index` }]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('skipped value', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<span v-for="(, key, index) in items" />')
+      expect(assertSharedCodegen(codegenNode)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `_` }, { content: `key` }, { content: `index` }]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('skipped key', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<span v-for="(item,,index) in items" />')
+      expect(assertSharedCodegen(codegenNode)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }, { content: `__` }, { content: `index` }]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('skipped value & key', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<span v-for="(,,index) in items" />')
+      expect(assertSharedCodegen(codegenNode)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `_` }, { content: `__` }, { content: `index` }]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('template v-for', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform(
+        '<template v-for="item in items">hello<span/></template>'
+      )
+      expect(assertSharedCodegen(codegenNode)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }],
+        blockArgs: [
+          FRAGMENT,
+          `null`,
+          [
+            { type: NodeTypes.TEXT, content: `hello` },
+            { type: NodeTypes.ELEMENT, tag: `span` }
+          ]
+        ]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('template v-for w/ <slot/>', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform(
+        '<template v-for="item in items"><slot/></template>'
+      )
+      expect(
+        assertSharedCodegen(codegenNode, false, true /* custom return */)
+      ).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }],
+        returns: {
+          type: NodeTypes.JS_CALL_EXPRESSION,
+          callee: RENDER_SLOT
+        }
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('v-for on <slot/>', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<slot v-for="item in items"></slot>')
+      expect(
+        assertSharedCodegen(codegenNode, false, true /* custom return */)
+      ).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }],
+        returns: {
+          type: NodeTypes.JS_CALL_EXPRESSION,
+          callee: RENDER_SLOT
+        }
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('keyed v-for', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<span v-for="(item) in items" :key="item" />')
+      expect(assertSharedCodegen(codegenNode, true)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }],
+        blockArgs: [
+          `"span"`,
+          createObjectMatcher({
+            key: `[item]`
+          })
+        ]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('keyed template v-for', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform(
+        '<template v-for="item in items" :key="item">hello<span/></template>'
+      )
+      expect(assertSharedCodegen(codegenNode, true)).toMatchObject({
+        source: { content: `items` },
+        params: [{ content: `item` }],
+        blockArgs: [
+          FRAGMENT,
+          createObjectMatcher({
+            key: `[item]`
+          }),
+          [
+            { type: NodeTypes.TEXT, content: `hello` },
+            { type: NodeTypes.ELEMENT, tag: `span` }
+          ]
+        ]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('v-if + v-for', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform(`<div v-if="ok" v-for="i in list"/>`)
+      expect(codegenNode).toMatchObject({
+        type: NodeTypes.JS_SEQUENCE_EXPRESSION,
+        expressions: [
+          {
+            type: NodeTypes.JS_CALL_EXPRESSION,
+            callee: OPEN_BLOCK,
+            arguments: []
+          },
+          {
+            type: NodeTypes.JS_CONDITIONAL_EXPRESSION,
+            test: { content: `ok` },
+            consequent: {
+              type: NodeTypes.JS_CALL_EXPRESSION,
+              callee: CREATE_BLOCK,
+              // should optimize v-if + v-for into a single Fragment block
+              arguments: [
+                FRAGMENT,
+                createObjectMatcher({ key: `[0]` }),
+                {
+                  type: NodeTypes.JS_CALL_EXPRESSION,
+                  callee: RENDER_LIST,
+                  arguments: [
+                    { content: `list` },
+                    {
+                      type: NodeTypes.JS_FUNCTION_EXPRESSION,
+                      params: [{ content: `i` }],
+                      returns: {
+                        type: NodeTypes.JS_SEQUENCE_EXPRESSION,
+                        expressions: [
+                          {
+                            type: NodeTypes.JS_CALL_EXPRESSION,
+                            callee: OPEN_BLOCK
+                          },
+                          {
+                            type: NodeTypes.JS_CALL_EXPRESSION,
+                            callee: CREATE_BLOCK,
+                            arguments: [`"div"`]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                genFlagText(PatchFlags.UNKEYED_FRAGMENT)
+              ]
+            }
+          }
+        ]
+      })
+      expect(generate(root).code).toMatchSnapshot()
+    })
+
+    test('v-for on element with custom directive', () => {
+      const {
+        root,
+        node: { codegenNode }
+      } = parseWithForTransform('<div v-for="i in list" v-foo/>')
+      const { returns } = assertSharedCodegen(codegenNode, false, true)
+      expect(returns).toMatchObject({
+        type: NodeTypes.JS_SEQUENCE_EXPRESSION,
+        expressions: [
+          { callee: OPEN_BLOCK },
+          // should wrap withDirectives() around createBlock()
+          {
+            callee: WITH_DIRECTIVES,
+            arguments: [
+              { callee: CREATE_BLOCK },
+              { type: NodeTypes.JS_ARRAY_EXPRESSION }
+            ]
+          }
+        ]
+      })
+      expect(generate(root).code).toMatchSnapshot()
     })
   })
 })

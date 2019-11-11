@@ -1,48 +1,43 @@
 import {
+  locStub,
   generate,
   NodeTypes,
   RootNode,
-  SourceLocation,
   createSimpleExpression,
-  Namespaces,
-  ElementTypes,
-  CallExpression,
   createObjectExpression,
   createObjectProperty,
   createArrayExpression,
-  ElementNode,
   createCompoundExpression,
-  createInterpolation
+  createInterpolation,
+  createSequenceExpression,
+  createCallExpression,
+  createConditionalExpression,
+  IfCodegenNode,
+  ForCodegenNode,
+  createCacheExpression
 } from '../src'
 import {
   CREATE_VNODE,
-  COMMENT,
   TO_STRING,
-  RENDER_LIST
-} from '../src/runtimeConstants'
-
-const mockLoc: SourceLocation = {
-  source: ``,
-  start: {
-    offset: 0,
-    line: 1,
-    column: 1
-  },
-  end: {
-    offset: 3,
-    line: 1,
-    column: 4
-  }
-}
+  RESOLVE_DIRECTIVE,
+  helperNameMap,
+  RESOLVE_COMPONENT,
+  CREATE_COMMENT
+} from '../src/runtimeHelpers'
+import { createElementWithCodegen } from './testUtils'
+import { PatchFlags } from '@vue/shared'
 
 function createRoot(options: Partial<RootNode> = {}): RootNode {
   return {
     type: NodeTypes.ROOT,
     children: [],
-    imports: [],
-    statements: [],
+    helpers: [],
+    components: [],
+    directives: [],
     hoists: [],
-    loc: mockLoc,
+    cached: 0,
+    codegenNode: createSimpleExpression(`null`, false),
+    loc: locStub,
     ...options
   }
 }
@@ -50,61 +45,89 @@ function createRoot(options: Partial<RootNode> = {}): RootNode {
 describe('compiler: codegen', () => {
   test('module mode preamble', () => {
     const root = createRoot({
-      imports: [`helperOne`, `helperTwo`]
+      helpers: [CREATE_VNODE, RESOLVE_DIRECTIVE]
     })
     const { code } = generate(root, { mode: 'module' })
-    expect(code).toMatch(`import { helperOne, helperTwo } from "vue"`)
+    expect(code).toMatch(
+      `import { ${helperNameMap[CREATE_VNODE]}, ${
+        helperNameMap[RESOLVE_DIRECTIVE]
+      } } from "vue"`
+    )
     expect(code).toMatchSnapshot()
   })
 
   test('function mode preamble', () => {
     const root = createRoot({
-      imports: [`helperOne`, `helperTwo`]
+      helpers: [CREATE_VNODE, RESOLVE_DIRECTIVE]
     })
     const { code } = generate(root, { mode: 'function' })
     expect(code).toMatch(`const _Vue = Vue`)
     expect(code).toMatch(
-      `const { helperOne: _helperOne, helperTwo: _helperTwo } = _Vue`
+      `const { ${helperNameMap[CREATE_VNODE]}: _${
+        helperNameMap[CREATE_VNODE]
+      }, ${helperNameMap[RESOLVE_DIRECTIVE]}: _${
+        helperNameMap[RESOLVE_DIRECTIVE]
+      } } = _Vue`
     )
     expect(code).toMatchSnapshot()
   })
 
   test('function mode preamble w/ prefixIdentifiers: true', () => {
     const root = createRoot({
-      imports: [`helperOne`, `helperTwo`]
+      helpers: [CREATE_VNODE, RESOLVE_DIRECTIVE]
     })
     const { code } = generate(root, {
       mode: 'function',
       prefixIdentifiers: true
     })
     expect(code).not.toMatch(`const _Vue = Vue`)
-    expect(code).toMatch(`const { helperOne, helperTwo } = Vue`)
+    expect(code).toMatch(
+      `const { ${helperNameMap[CREATE_VNODE]}, ${
+        helperNameMap[RESOLVE_DIRECTIVE]
+      } } = Vue`
+    )
     expect(code).toMatchSnapshot()
   })
 
-  test('statements', () => {
+  test('assets', () => {
     const root = createRoot({
-      statements: [`const a = 1`, `const b = 2`]
+      components: [`Foo`, `bar-baz`, `barbaz`],
+      directives: [`my_dir`]
     })
     const { code } = generate(root, { mode: 'function' })
-    expect(code).toMatch(`const a = 1\n`)
-    expect(code).toMatch(`const b = 2\n`)
+    expect(code).toMatch(
+      `const _component_Foo = _${helperNameMap[RESOLVE_COMPONENT]}("Foo")\n`
+    )
+    expect(code).toMatch(
+      `const _component_bar_baz = _${
+        helperNameMap[RESOLVE_COMPONENT]
+      }("bar-baz")\n`
+    )
+    expect(code).toMatch(
+      `const _component_barbaz = _${
+        helperNameMap[RESOLVE_COMPONENT]
+      }("barbaz")\n`
+    )
+    expect(code).toMatch(
+      `const _directive_my_dir = _${
+        helperNameMap[RESOLVE_DIRECTIVE]
+      }("my_dir")\n`
+    )
     expect(code).toMatchSnapshot()
   })
 
   test('hoists', () => {
     const root = createRoot({
       hoists: [
-        createSimpleExpression(`hello`, false, mockLoc),
+        createSimpleExpression(`hello`, false, locStub),
         createObjectExpression(
           [
             createObjectProperty(
-              createSimpleExpression(`id`, true, mockLoc),
-              createSimpleExpression(`foo`, true, mockLoc),
-              mockLoc
+              createSimpleExpression(`id`, true, locStub),
+              createSimpleExpression(`foo`, true, locStub)
             )
           ],
-          mockLoc
+          locStub
         )
       ]
     })
@@ -123,14 +146,11 @@ describe('compiler: codegen', () => {
   test('static text', () => {
     const { code } = generate(
       createRoot({
-        children: [
-          {
-            type: NodeTypes.TEXT,
-            content: 'hello',
-            isEmpty: false,
-            loc: mockLoc
-          }
-        ]
+        codegenNode: {
+          type: NodeTypes.TEXT,
+          content: 'hello',
+          loc: locStub
+        }
       })
     )
     expect(code).toMatch(`return "hello"`)
@@ -140,499 +160,248 @@ describe('compiler: codegen', () => {
   test('interpolation', () => {
     const { code } = generate(
       createRoot({
-        children: [createInterpolation(`hello`, mockLoc)]
+        codegenNode: createInterpolation(`hello`, locStub)
       })
     )
-    expect(code).toMatch(`return _${TO_STRING}(hello)`)
+    expect(code).toMatch(`return _${helperNameMap[TO_STRING]}(hello)`)
     expect(code).toMatchSnapshot()
   })
 
   test('comment', () => {
     const { code } = generate(
       createRoot({
-        children: [
-          {
-            type: NodeTypes.COMMENT,
-            content: 'foo',
-            loc: mockLoc
-          }
-        ]
+        codegenNode: {
+          type: NodeTypes.COMMENT,
+          content: 'foo',
+          loc: locStub
+        }
       })
     )
-    expect(code).toMatch(`return _${CREATE_VNODE}(_${COMMENT}, 0, "foo")`)
-    expect(code).toMatchSnapshot()
-  })
-
-  test('text + comment + interpolation', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.TEXT,
-            content: 'foo',
-            isEmpty: false,
-            loc: mockLoc
-          },
-          createInterpolation(`hello`, mockLoc),
-          {
-            type: NodeTypes.COMMENT,
-            content: 'foo',
-            loc: mockLoc
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(`
-    return [
-      "foo",
-      _${TO_STRING}(hello),
-      _${CREATE_VNODE}(_${COMMENT}, 0, "foo")
-    ]`)
-    expect(code).toMatchSnapshot()
-  })
-
-  test('text + comment + interpolation w/ prefixIdentifiers: true', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.TEXT,
-            content: 'foo',
-            isEmpty: false,
-            loc: mockLoc
-          },
-          createInterpolation(`hello`, mockLoc),
-          {
-            type: NodeTypes.COMMENT,
-            content: 'foo',
-            loc: mockLoc
-          }
-        ]
-      }),
-      {
-        prefixIdentifiers: true
-      }
-    )
-    expect(code).toMatch(`
-  return [
-    "foo",
-    ${TO_STRING}(hello),
-    ${CREATE_VNODE}(${COMMENT}, 0, "foo")
-  ]`)
+    expect(code).toMatch(`return _${helperNameMap[CREATE_COMMENT]}("foo")`)
     expect(code).toMatchSnapshot()
   })
 
   test('compound expression', () => {
     const { code } = generate(
       createRoot({
-        children: [
-          createInterpolation(
-            createCompoundExpression(
-              [`_ctx.`, createSimpleExpression(`foo`, false, mockLoc)],
-              mockLoc
-            ),
-            mockLoc
-          )
-        ]
+        codegenNode: createCompoundExpression([
+          `_ctx.`,
+          createSimpleExpression(`foo`, false, locStub),
+          ` + `,
+          {
+            type: NodeTypes.INTERPOLATION,
+            loc: locStub,
+            content: createSimpleExpression(`bar`, false, locStub)
+          }
+        ])
       })
     )
-    expect(code).toMatch(`return _${TO_STRING}(_ctx.foo)`)
+    expect(code).toMatch(`return _ctx.foo + _${helperNameMap[TO_STRING]}(bar)`)
     expect(code).toMatchSnapshot()
   })
 
   test('ifNode', () => {
     const { code } = generate(
       createRoot({
-        children: [
-          {
-            type: NodeTypes.IF,
-            loc: mockLoc,
-            branches: [
-              {
-                type: NodeTypes.IF_BRANCH,
-                condition: createSimpleExpression('foo', false, mockLoc),
-                loc: mockLoc,
-                children: [
-                  {
-                    type: NodeTypes.TEXT,
-                    content: 'foo',
-                    isEmpty: false,
-                    loc: mockLoc
-                  }
-                ]
-              },
-              {
-                type: NodeTypes.IF_BRANCH,
-                condition: createSimpleExpression('a + b', false, mockLoc),
-                loc: mockLoc,
-                children: [createInterpolation(`bye`, mockLoc)]
-              },
-              {
-                type: NodeTypes.IF_BRANCH,
-                condition: undefined,
-                loc: mockLoc,
-                children: [
-                  {
-                    type: NodeTypes.COMMENT,
-                    content: 'foo',
-                    loc: mockLoc
-                  }
-                ]
-              }
-            ]
-          }
-        ]
+        codegenNode: {
+          type: NodeTypes.IF,
+          loc: locStub,
+          branches: [],
+          codegenNode: createSequenceExpression([
+            createSimpleExpression('foo', false),
+            createSimpleExpression('bar', false)
+          ]) as IfCodegenNode
+        }
       })
     )
-    expect(code).toMatch(`
-    return foo
-      ? "foo"
-      : (a + b)
-        ? _${TO_STRING}(bye)
-        : _${CREATE_VNODE}(_${COMMENT}, 0, "foo")`)
-    expect(code).toMatchSnapshot()
-  })
-
-  test('ifNode with no v-else', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.IF,
-            loc: mockLoc,
-            branches: [
-              {
-                type: NodeTypes.IF_BRANCH,
-                condition: createSimpleExpression('foo', false, mockLoc),
-                loc: mockLoc,
-                children: [
-                  {
-                    type: NodeTypes.TEXT,
-                    content: 'foo',
-                    isEmpty: false,
-                    loc: mockLoc
-                  }
-                ]
-              },
-              {
-                type: NodeTypes.IF_BRANCH,
-                condition: createSimpleExpression('a + b', false, mockLoc),
-                loc: mockLoc,
-                children: [createInterpolation(`bye`, mockLoc)]
-              }
-            ]
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(`
-    return foo
-      ? "foo"
-      : (a + b)
-        ? _${TO_STRING}(bye)
-        : null`)
+    expect(code).toMatch(`return (foo, bar)`)
     expect(code).toMatchSnapshot()
   })
 
   test('forNode', () => {
     const { code } = generate(
       createRoot({
-        children: [
-          {
-            type: NodeTypes.FOR,
-            loc: mockLoc,
-            source: createSimpleExpression(`list`, false, mockLoc),
-            valueAlias: createSimpleExpression(`v`, false, mockLoc),
-            keyAlias: createSimpleExpression(`k`, false, mockLoc),
-            objectIndexAlias: createSimpleExpression(`i`, false, mockLoc),
-            children: [createInterpolation(`v`, mockLoc)]
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(
-      `return _${RENDER_LIST}(list, (v, k, i) => {
-      return _${TO_STRING}(v)
-    })`
-    )
-    expect(code).toMatchSnapshot()
-  })
-
-  test('forNode w/ prefixIdentifiers: true', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.FOR,
-            loc: mockLoc,
-            source: createSimpleExpression(`list`, false, mockLoc),
-            valueAlias: createSimpleExpression(`v`, false, mockLoc),
-            keyAlias: createSimpleExpression(`k`, false, mockLoc),
-            objectIndexAlias: createSimpleExpression(`i`, false, mockLoc),
-            children: [createInterpolation(`v`, mockLoc)]
-          }
-        ]
-      }),
-      {
-        prefixIdentifiers: true
-      }
-    )
-    expect(code).toMatch(
-      `return ${RENDER_LIST}(list, (v, k, i) => {
-    return ${TO_STRING}(v)
-  })`
-    )
-    expect(code).toMatchSnapshot()
-  })
-
-  test('forNode w/ skipped value alias', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.FOR,
-            loc: mockLoc,
-            source: createSimpleExpression(`list`, false, mockLoc),
-            valueAlias: undefined,
-            keyAlias: createSimpleExpression(`k`, false, mockLoc),
-            objectIndexAlias: createSimpleExpression(`i`, false, mockLoc),
-            children: [createInterpolation(`v`, mockLoc)]
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(
-      `return _${RENDER_LIST}(list, (__value, k, i) => {
-      return _${TO_STRING}(v)
-    })`
-    )
-    expect(code).toMatchSnapshot()
-  })
-
-  test('forNode w/ skipped key alias', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.FOR,
-            loc: mockLoc,
-            source: createSimpleExpression(`list`, false, mockLoc),
-            valueAlias: createSimpleExpression(`v`, false, mockLoc),
-            keyAlias: undefined,
-            objectIndexAlias: createSimpleExpression(`i`, false, mockLoc),
-            children: [createInterpolation(`v`, mockLoc)]
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(
-      `return _${RENDER_LIST}(list, (v, __key, i) => {
-      return _${TO_STRING}(v)
-    })`
-    )
-    expect(code).toMatchSnapshot()
-  })
-
-  test('forNode w/ skipped value and key aliases', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.FOR,
-            loc: mockLoc,
-            source: createSimpleExpression(`list`, false, mockLoc),
-            valueAlias: undefined,
-            keyAlias: undefined,
-            objectIndexAlias: createSimpleExpression(`i`, false, mockLoc),
-            children: [createInterpolation(`v`, mockLoc)]
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(
-      `return _${RENDER_LIST}(list, (__value, __key, i) => {
-      return _${TO_STRING}(v)
-    })`
-    )
-    expect(code).toMatchSnapshot()
-  })
-
-  test('SlotFunctionExpression', () => {
-    const { code } = generate(
-      createRoot({
-        children: [
-          {
-            type: NodeTypes.ELEMENT,
-            tagType: ElementTypes.COMPONENT,
-            ns: Namespaces.HTML,
-            isSelfClosing: false,
-            tag: `Comp`,
-            loc: mockLoc,
-            props: [],
-            children: [],
-            codegenNode: {
-              type: NodeTypes.JS_CALL_EXPRESSION,
-              loc: mockLoc,
-              callee: `_${CREATE_VNODE}`,
-              arguments: [
-                `Comp`,
-                `0`,
-                {
-                  type: NodeTypes.JS_OBJECT_EXPRESSION,
-                  loc: mockLoc,
-                  properties: [
-                    {
-                      type: NodeTypes.JS_PROPERTY,
-                      loc: mockLoc,
-                      key: {
-                        type: NodeTypes.SIMPLE_EXPRESSION,
-                        isStatic: true,
-                        content: `default`,
-                        loc: mockLoc
-                      },
-                      value: {
-                        type: NodeTypes.JS_SLOT_FUNCTION,
-                        loc: mockLoc,
-                        params: {
-                          type: NodeTypes.SIMPLE_EXPRESSION,
-                          isStatic: false,
-                          content: `{ foo }`,
-                          loc: mockLoc
-                        },
-                        returns: [
-                          {
-                            type: NodeTypes.INTERPOLATION,
-                            loc: mockLoc,
-                            content: {
-                              type: NodeTypes.SIMPLE_EXPRESSION,
-                              isStatic: false,
-                              content: `foo`,
-                              loc: mockLoc
-                            }
-                          }
-                        ]
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          }
-        ]
-      })
-    )
-    expect(code).toMatch(
-      `return _createVNode(Comp, 0, {
-      default: ({ foo }) => [
-        _toString(foo)
-      ]
-    })`
-    )
-    expect(code).toMatchSnapshot()
-  })
-
-  test('callExpression + objectExpression + arrayExpression', () => {
-    function createElementWithCodegen(
-      args: CallExpression['arguments']
-    ): ElementNode {
-      return {
-        type: NodeTypes.ELEMENT,
-        loc: mockLoc,
-        ns: Namespaces.HTML,
-        tag: 'div',
-        tagType: ElementTypes.ELEMENT,
-        isSelfClosing: false,
-        props: [],
-        children: [],
         codegenNode: {
-          type: NodeTypes.JS_CALL_EXPRESSION,
-          loc: mockLoc,
-          callee: CREATE_VNODE,
-          arguments: args
+          type: NodeTypes.FOR,
+          loc: locStub,
+          source: createSimpleExpression('foo', false),
+          valueAlias: undefined,
+          keyAlias: undefined,
+          objectIndexAlias: undefined,
+          children: [],
+          codegenNode: createSequenceExpression([
+            createSimpleExpression('foo', false),
+            createSimpleExpression('bar', false)
+          ]) as ForCodegenNode
         }
-      }
-    }
+      })
+    )
+    expect(code).toMatch(`return (foo, bar)`)
+    expect(code).toMatchSnapshot()
+  })
 
+  test('Element (callExpression + objectExpression + TemplateChildNode[])', () => {
     const { code } = generate(
       createRoot({
-        children: [
-          createElementWithCodegen([
-            // string
-            `"div"`,
-            // ObjectExpression
-            createObjectExpression(
-              [
-                createObjectProperty(
-                  createSimpleExpression(`id`, true, mockLoc),
-                  createSimpleExpression(`foo`, true, mockLoc),
-                  mockLoc
-                ),
-                createObjectProperty(
-                  createSimpleExpression(`prop`, false, mockLoc),
-                  createSimpleExpression(`bar`, false, mockLoc),
-                  mockLoc
-                ),
-                // compound expression as computed key
-                createObjectProperty(
-                  {
-                    type: NodeTypes.COMPOUND_EXPRESSION,
-                    loc: mockLoc,
-                    children: [
-                      `foo + `,
-                      createSimpleExpression(`bar`, false, mockLoc)
-                    ]
-                  },
-                  createSimpleExpression(`bar`, false, mockLoc),
-                  mockLoc
-                )
-              ],
-              mockLoc
-            ),
-            // ChildNode[]
+        codegenNode: createElementWithCodegen([
+          // string
+          `"div"`,
+          // ObjectExpression
+          createObjectExpression(
             [
-              createElementWithCodegen([
-                `"p"`,
-                createObjectExpression(
-                  [
-                    createObjectProperty(
-                      // should quote the key!
-                      createSimpleExpression(`some-key`, true, mockLoc),
-                      createSimpleExpression(`foo`, true, mockLoc),
-                      mockLoc
-                    )
-                  ],
-                  mockLoc
-                )
-              ])
-            ],
-            // ArrayExpression
-            createArrayExpression(
-              [
-                'foo',
+              createObjectProperty(
+                createSimpleExpression(`id`, true, locStub),
+                createSimpleExpression(`foo`, true, locStub)
+              ),
+              createObjectProperty(
+                createSimpleExpression(`prop`, false, locStub),
+                createSimpleExpression(`bar`, false, locStub)
+              ),
+              // compound expression as computed key
+              createObjectProperty(
                 {
-                  type: NodeTypes.JS_CALL_EXPRESSION,
-                  loc: mockLoc,
-                  callee: CREATE_VNODE,
-                  arguments: [`"p"`]
-                }
-              ],
-              mockLoc
-            )
-          ])
-        ]
+                  type: NodeTypes.COMPOUND_EXPRESSION,
+                  loc: locStub,
+                  children: [
+                    `foo + `,
+                    createSimpleExpression(`bar`, false, locStub)
+                  ]
+                },
+                createSimpleExpression(`bar`, false, locStub)
+              )
+            ],
+            locStub
+          ),
+          // ChildNode[]
+          [
+            createElementWithCodegen([
+              `"p"`,
+              createObjectExpression(
+                [
+                  createObjectProperty(
+                    // should quote the key!
+                    createSimpleExpression(`some-key`, true, locStub),
+                    createSimpleExpression(`foo`, true, locStub)
+                  )
+                ],
+                locStub
+              )
+            ])
+          ],
+          // flag
+          PatchFlags.FULL_PROPS + ''
+        ])
       })
     )
     expect(code).toMatch(`
-    return ${CREATE_VNODE}("div", {
+    return _${helperNameMap[CREATE_VNODE]}("div", {
       id: "foo",
       [prop]: bar,
       [foo + bar]: bar
     }, [
-      ${CREATE_VNODE}("p", { "some-key": "foo" })
-    ], [
+      _${helperNameMap[CREATE_VNODE]}("p", { "some-key": "foo" })
+    ], ${PatchFlags.FULL_PROPS})`)
+    expect(code).toMatchSnapshot()
+  })
+
+  test('ArrayExpression', () => {
+    const { code } = generate(
+      createRoot({
+        codegenNode: createArrayExpression([
+          createSimpleExpression(`foo`, false),
+          createCallExpression(`bar`, [`baz`])
+        ])
+      })
+    )
+    expect(code).toMatch(`return [
       foo,
-      ${CREATE_VNODE}("p")
-    ])`)
+      bar(baz)
+    ]`)
+    expect(code).toMatchSnapshot()
+  })
+
+  test('SequenceExpression', () => {
+    const { code } = generate(
+      createRoot({
+        codegenNode: createSequenceExpression([
+          createSimpleExpression(`foo`, false),
+          createCallExpression(`bar`, [`baz`])
+        ])
+      })
+    )
+    expect(code).toMatch(`return (foo, bar(baz))`)
+    expect(code).toMatchSnapshot()
+  })
+
+  test('ConditionalExpression', () => {
+    const { code } = generate(
+      createRoot({
+        codegenNode: createConditionalExpression(
+          createSimpleExpression(`ok`, false),
+          createCallExpression(`foo`),
+          createConditionalExpression(
+            createSimpleExpression(`orNot`, false),
+            createCallExpression(`bar`),
+            createCallExpression(`baz`)
+          )
+        )
+      })
+    )
+    expect(code).toMatch(
+      `return ok
+      ? foo()
+      : orNot
+        ? bar()
+        : baz()`
+    )
+    expect(code).toMatchSnapshot()
+  })
+
+  test('CacheExpression', () => {
+    const { code } = generate(
+      createRoot({
+        cached: 1,
+        codegenNode: createCacheExpression(
+          1,
+          createSimpleExpression(`foo`, false)
+        )
+      }),
+      {
+        mode: 'module',
+        prefixIdentifiers: true
+      }
+    )
+    expect(code).toMatch(`const _cache = _ctx.$cache`)
+    expect(code).toMatch(`_cache[1] || (_cache[1] = foo)`)
+    expect(code).toMatchSnapshot()
+  })
+
+  test('CacheExpression w/ isVNode: true', () => {
+    const { code } = generate(
+      createRoot({
+        cached: 1,
+        codegenNode: createCacheExpression(
+          1,
+          createSimpleExpression(`foo`, false),
+          true
+        )
+      }),
+      {
+        mode: 'module',
+        prefixIdentifiers: true
+      }
+    )
+    expect(code).toMatch(`const _cache = _ctx.$cache`)
+    expect(code).toMatch(
+      `
+  _cache[1] || (
+    setBlockTracking(-1),
+    _cache[1] = foo,
+    setBlockTracking(1),
+    _cache[1]
+  )
+    `.trim()
+    )
     expect(code).toMatchSnapshot()
   })
 })

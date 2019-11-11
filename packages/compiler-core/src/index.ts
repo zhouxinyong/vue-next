@@ -6,13 +6,15 @@ import { isString } from '@vue/shared'
 import { transformIf } from './transforms/vIf'
 import { transformFor } from './transforms/vFor'
 import { transformExpression } from './transforms/transformExpression'
-import { transformStyle } from './transforms/transformStyle'
-import { transformSlotOutlet } from './transforms/transfromSlotOutlet'
+import { transformSlotOutlet } from './transforms/transformSlotOutlet'
 import { transformElement } from './transforms/transformElement'
 import { transformOn } from './transforms/vOn'
 import { transformBind } from './transforms/vBind'
 import { defaultOnError, createCompilerError, ErrorCodes } from './errors'
-import { trackSlotScopes } from './transforms/vSlot'
+import { trackSlotScopes, trackVForSlotScopes } from './transforms/vSlot'
+import { transformText } from './transforms/transformText'
+import { transformOnce } from './transforms/vOnce'
+import { transformModel } from './transforms/vModel'
 
 export type CompilerOptions = ParserOptions & TransformOptions & CodegenOptions
 
@@ -42,22 +44,34 @@ export function baseCompile(
     ...options,
     prefixIdentifiers,
     nodeTransforms: [
+      transformOnce,
       transformIf,
       transformFor,
-      ...(prefixIdentifiers ? [transformExpression, trackSlotScopes] : []),
-      transformStyle,
+      ...(prefixIdentifiers
+        ? [
+            // order is important
+            trackVForSlotScopes,
+            transformExpression
+          ]
+        : []),
       transformSlotOutlet,
       transformElement,
+      trackSlotScopes,
+      transformText,
       ...(options.nodeTransforms || []) // user transforms
     ],
     directiveTransforms: {
       on: transformOn,
       bind: transformBind,
+      model: transformModel,
       ...(options.directiveTransforms || {}) // user transforms
     }
   })
 
-  return generate(ast, options)
+  return generate(ast, {
+    ...options,
+    prefixIdentifiers
+  })
 }
 
 // Also expose lower level APIs & types
@@ -68,7 +82,8 @@ export {
   TransformOptions,
   TransformContext,
   NodeTransform,
-  StructuralDirectiveTransform
+  StructuralDirectiveTransform,
+  DirectiveTransform
 } from './transform'
 export {
   generate,
@@ -76,5 +91,16 @@ export {
   CodegenContext,
   CodegenResult
 } from './codegen'
-export { ErrorCodes, CompilerError, createCompilerError } from './errors'
+export {
+  ErrorCodes,
+  CoreCompilerError,
+  CompilerError,
+  createCompilerError
+} from './errors'
 export * from './ast'
+export * from './utils'
+export { registerRuntimeHelpers } from './runtimeHelpers'
+
+// expose transforms so higher-order compilers can import and extend them
+export { transformModel } from './transforms/vModel'
+export { transformOn } from './transforms/vOn'
